@@ -1,0 +1,21 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: LuaJIT + luasocket (runs the real mod in a fake game)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq luajit lua-socket
+      - run: pip install -e '.[dev]'
+      - run: python -m pytest -q

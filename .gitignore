@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+# Game files and patched builds never go in the repo.
+*.apk
+*.apks
+*.xapk
+*.love
+*.keystore
+*.idsig
+out/
