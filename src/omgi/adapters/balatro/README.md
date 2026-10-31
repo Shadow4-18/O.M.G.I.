@@ -43,6 +43,24 @@ builds install as updates without uninstalling again).
 If the game doesn't declare the INTERNET permission (a local socket needs it),
 the patcher adds it with [apktool](https://apktool.org) when that's installed.
 
+## Checks before installing
+
+`omgi patch` checks every build and writes `omgi-diagnostics.txt` next to the
+APKs; `omgi install` refuses a build without a PASSED report.
+
+- **Protection**: a build that ships anti-tamper protection (such as Google
+  Play's, `libpairipcore.so`) is refused before anything is built. Such apps
+  won't run once modified or re-signed, and patching one would only cost you
+  the store install.
+- every original split is present, native libraries are byte-identical,
+  uncompressed `.so` files sit on 16 KB boundaries
+- only the expected files changed, and whether the manifest was rebuilt with
+  apktool
+- every APK verifies with apksigner and all share one signer
+
+`omgi patch balatro <source> --noop` rebuilds and re-signs without injecting
+anything, to test the rebuild on its own.
+
 ## Connect
 
 - **Ophelia on Termux, same phone:** nothing to do; it connects to 127.0.0.1.
@@ -105,6 +123,10 @@ the deck's order and upcoming shop/pack contents are never read, and seeds or
 RNG state aren't exposed. Locked decks and stakes can't be started.
 
 ## Status
+
+**The current Google Play build (1.8) ships Google Play's anti-tamper
+protection**, so it can't be patched; `omgi patch` refuses it. Builds without
+that protection, and the desktop game, are what this adapter can work with.
 
 Built against Balatro's Lua globals as they are in the 1.0.x code and tested
 here against a stand-in of the game (`tests/lua/fake_balatro.lua`), not yet on

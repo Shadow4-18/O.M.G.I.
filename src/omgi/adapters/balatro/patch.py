@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
-from omgi import apk
+from omgi import apk, verify
 from omgi.apk import PatchError
 
 ADAPTER = "balatro"
@@ -36,6 +36,13 @@ class PatchResult:
     port: int = DEFAULT_PORT
     notes: list[str] = field(default_factory=list)
     signed: bool = False
+    noop: bool = False
+    apktool_rebuilt: set[str] = field(default_factory=set)
+    checks: list[verify.Check] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not verify.failed(self.checks)
 
 
 def _lua_tree(package: str) -> dict[str, bytes]:
@@ -122,12 +129,18 @@ def patch_apks(
     token: str = "",
     sign: bool = True,
     keystore: Path | None = None,
+    noop: bool = False,
+    min_sdk: int | None = None,
 ) -> PatchResult:
+    """Build the patched APK set and check it. noop=True rebuilds and re-signs
+    without injecting anything, to test the rebuild on its own."""
     source = Path(source).expanduser()
     out_dir = Path(out_dir).expanduser()
-    result = PatchResult(port=port)
+    result = PatchResult(port=port, noop=noop)
 
     if source.suffix.lower() == ".love":
+        if noop:
+            raise PatchError("--noop applies to APKs; a .love file has nothing to rebuild")
         out_dir.mkdir(parents=True, exist_ok=True)
         dest = out_dir / source.name
         dest.write_bytes(patch_love(source.read_bytes(), port=port, token=token))
@@ -135,37 +148,54 @@ def patch_apks(
         result.notes.append(f"Run it with LÖVE 11: `love {dest}` — the link listens on 127.0.0.1:{port}.")
         return result
 
-    apks = apk.load_apk_set(source)
-    apk_name, entry, kind = _find_game(apks)
-    data = apks.apks[apk_name]
-    if kind == "love":
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            love = z.read(entry)
-        patched = apk.rewrite_zip(data, {entry: patch_love(love, port=port, token=token)})
-    else:
-        patched = patch_love(data, port=port, token=token, prefix=entry)
+    original = apk.load_apk_set(source)
+    verify.refuse_if_protected(original)
+    apks = apk.ApkSet(base_name=original.base_name, apks=dict(original.apks))
+    expected: set[str] = set()
+    apk_name = None
 
-    if not apk.manifest_has_permission(apks.base if apk_name != apks.base_name else patched, INTERNET):
-        if apk_name != apks.base_name:
-            apks.apks[apks.base_name] = apk.add_permission_with_apktool(apks.base, INTERNET)
+    if not noop:
+        apk_name, entry, kind = _find_game(apks)
+        data = apks.apks[apk_name]
+        if kind == "love":
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                love = z.read(entry)
+            patched = apk.rewrite_zip(data, {entry: patch_love(love, port=port, token=token)})
+            expected.add(f"{apk_name}:{entry}")
         else:
-            patched = apk.add_permission_with_apktool(patched, INTERNET)
-        result.notes.append("Added the INTERNET permission (the game didn't have it) so the link can listen.")
-    apks.apks[apk_name] = patched
+            patched = patch_love(data, port=port, token=token, prefix=entry)
+            expected.add(f"{apk_name}:{entry}main.lua")
+            expected |= {f"{apk_name}:{entry}{rel}" for rel in mod_files(port, token)}
+
+        if not apk.manifest_has_permission(apks.base if apk_name != apks.base_name else patched, INTERNET):
+            if apk_name != apks.base_name:
+                apks.apks[apks.base_name] = apk.add_permission_with_apktool(apks.base, INTERNET)
+            else:
+                patched = apk.add_permission_with_apktool(patched, INTERNET)
+            result.apktool_rebuilt.add(apks.base_name)
+            result.notes.append("Added the INTERNET permission (the game didn't have it) so the link can listen.")
+        apks.apks[apk_name] = patched
+    else:
+        result.notes.append("No-op rebuild: every APK rewritten and re-signed, nothing injected.")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.apk"):
         old.unlink()
     for name, blob in apks.apks.items():
-        if name != apk_name:
+        if name != apk_name and name not in result.apktool_rebuilt:
             blob = apk.rewrite_zip(blob)  # drop the store signature so ours is the only one
         dest = out_dir / name
         dest.write_bytes(blob)
         result.outputs.append(dest)
 
     if sign:
-        apk.sign(result.outputs, keystore)
+        apk.sign(result.outputs, keystore, min_sdk=min_sdk)
         result.signed = True
     else:
         result.notes.append("Not signed (--no-sign): sign every APK with the same key before installing.")
+
+    result.checks = verify.diagnose(
+        original, result.outputs, expected_changes=expected,
+        apktool_rebuilt=result.apktool_rebuilt, signed=result.signed, min_sdk=min_sdk,
+    )
     return result

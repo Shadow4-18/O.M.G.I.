@@ -191,7 +191,7 @@ def ensure_keystore(path: Path | None = None) -> Path:
     return path
 
 
-def sign(apks: list[Path], keystore: Path | None = None) -> None:
+def sign(apks: list[Path], keystore: Path | None = None, *, min_sdk: int | None = None) -> None:
     """Sign APKs in place with one key (every split must share the base's key)."""
     apksigner = find_tool("apksigner")
     if not apksigner:
@@ -202,7 +202,8 @@ def sign(apks: list[Path], keystore: Path | None = None) -> None:
     for apk in apks:
         proc = subprocess.run(
             [apksigner, "sign", "--ks", str(ks), "--ks-key-alias", KEY_ALIAS,
-             "--ks-pass", f"pass:{KEY_PASS}", "--key-pass", f"pass:{KEY_PASS}", str(apk)],
+             "--ks-pass", f"pass:{KEY_PASS}", "--key-pass", f"pass:{KEY_PASS}"]
+            + (["--min-sdk-version", str(min_sdk)] if min_sdk else []) + [str(apk)],
             capture_output=True, text=True,
         )
         if proc.returncode != 0:

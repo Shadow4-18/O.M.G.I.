@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from omgi import adapters
+from omgi import adapters, verify
 from omgi.apk import PatchError
 from omgi.client import Client, OMGIError
 from omgi.render import format_actions, render_state
@@ -80,17 +80,28 @@ def cmd_patch(args: argparse.Namespace) -> int:
         res = patch.patch_apks(
             Path(args.source), out, port=args.port or patch.DEFAULT_PORT, token=args.token or "",
             sign=not args.no_sign, keystore=Path(args.keystore) if args.keystore else None,
+            noop=args.noop,
         )
     except PatchError as e:
         print(f"Patch failed: {e}", file=sys.stderr)
         return 1
-    print("Patched:")
+    print("No-op rebuild:" if res.noop else "Patched:")
     for p in res.outputs:
         print(f"  {p}")
     for n in res.notes:
         print(f"Note: {n}")
-    if res.outputs and res.outputs[0].suffix == ".apk":
+    if not res.checks:
+        return 0
+    text = verify.report(res.checks)
+    status = "PASSED" if res.ok else "FAILED"
+    (out / DIAGNOSTICS).write_text(f"{status}\n{text}\n", encoding="utf-8")
+    print(f"\nDiagnostics ({status}):\n{text}")
+    if not res.ok:
+        print("\nDon't install this build; the failed check above says what's wrong.", file=sys.stderr)
+        return 1
+    if not res.noop:
         print(f"\nThe link will listen on 127.0.0.1:{res.port} inside the game.")
+    if res.signed:
         print(f"Install with: omgi install {out}")
     return 0
 
@@ -105,11 +116,21 @@ def _adb(args: argparse.Namespace) -> list[str]:
     return cmd
 
 
+DIAGNOSTICS = "omgi-diagnostics.txt"
+
+
 def cmd_install(args: argparse.Namespace) -> int:
     folder = Path(args.folder)
     apks = sorted(folder.glob("*.apk"))
     if not apks:
         print(f"No APKs in {folder}", file=sys.stderr)
+        return 1
+    diag = folder / DIAGNOSTICS
+    if not diag.is_file():
+        print(f"No diagnostics in {folder}: re-run `omgi patch` so the build gets checked first.", file=sys.stderr)
+        return 1
+    if not diag.read_text(encoding="utf-8").startswith("PASSED"):
+        print(f"This build failed its checks; see {diag}.", file=sys.stderr)
         return 1
     if not args.yes:
         print(
@@ -217,6 +238,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--token", default="", help="require this token from clients")
     sp.add_argument("--no-sign", action="store_true")
     sp.add_argument("--keystore", help="signing keystore (default ~/.omgi/omgi-patch.keystore)")
+    sp.add_argument("--noop", action="store_true",
+                    help="rebuild and re-sign without injecting anything (tests the rebuild alone)")
     sp.set_defaults(fn=cmd_patch)
 
     sp = sub.add_parser("install", help="Install a patched APK set over ADB")
